@@ -2,6 +2,7 @@ import { useState } from "react";
 import { X, ArrowRight, ArrowLeft, CheckCircle2, AlertTriangle, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { useNavigate } from "react-router-dom";
 
 interface PreSessionCheckModalProps {
   open: boolean;
@@ -14,12 +15,24 @@ const painOptions = ["No unusual pain", "Mild sharp pain", "Severe sharp pain"];
 const TOTAL_STEPS = 3;
 
 const PreSessionCheckModal = ({ open, onClose }: PreSessionCheckModalProps) => {
+  const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [submitted, setSubmitted] = useState(false);
 
   const [painLevel, setPainLevel] = useState([3]);
   const [sorenessAreas, setSorenessAreas] = useState<string[]>([]);
   const [sharpPain, setSharpPain] = useState("");
+
+  const handleGoToSession = () => {
+    onClose();
+    navigate("/session", {
+      state: {
+        painLevelBefore: painLevel[0],
+        sorenessAreas,
+        sharpPain,
+      },
+    });
+  };
 
   if (!open) return null;
 
@@ -130,7 +143,7 @@ const PreSessionCheckModal = ({ open, onClose }: PreSessionCheckModalProps) => {
                       <Button
                         key={btn.label}
                         variant={btn.variant}
-                        onClick={onClose}
+                        onClick={btn.variant === "outline" ? onClose : handleGoToSession}
                         className="h-11 px-6 rounded-xl text-sm font-medium"
                       >
                         {btn.label}

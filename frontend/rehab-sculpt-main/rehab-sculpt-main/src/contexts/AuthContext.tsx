@@ -21,8 +21,12 @@ interface AuthContextType {
   signIn: (
     email: string,
     password: string
-  ) => Promise<{ error: AuthError | null }>;
+  ) => Promise<{
+    error: AuthError | null;
+    data: { session: Session | null; user: User | null };
+  }>;
   signOut: () => Promise<void>;
+  resendConfirmation: (email: string) => Promise<{ error: AuthError | null }>;
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -57,25 +61,47 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const signUp = async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signUp({ email, password });
+    const redirectUrl = `${window.location.origin}/login`;
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { emailRedirectTo: redirectUrl },
+    });
     return { data: { user: data.user }, error };
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
-    return { error };
+    return { data: { session: data.session, user: data.user }, error };
   };
 
   const signOut = async () => {
     await supabase.auth.signOut();
   };
 
+  const resendConfirmation = async (email: string) => {
+    const { error } = await supabase.auth.resend({
+      type: "signup",
+      email,
+      options: { emailRedirectTo: `${window.location.origin}/login` },
+    });
+    return { error };
+  };
+
   return (
     <AuthContext.Provider
-      value={{ user, session, loading, signUp, signIn, signOut }}
+      value={{
+        user,
+        session,
+        loading,
+        signUp,
+        signIn,
+        signOut,
+        resendConfirmation,
+      }}
     >
       {children}
     </AuthContext.Provider>

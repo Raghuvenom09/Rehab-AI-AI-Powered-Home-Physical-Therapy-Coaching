@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X, ArrowRight, ArrowLeft, CheckCircle2 } from "lucide-react";
+import { X, ArrowRight, ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,6 +11,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/contexts/AuthContext";
+import { toast } from "sonner";
 
 interface OnboardingModalProps {
   open: boolean;
@@ -26,8 +29,10 @@ const durations = ["Less than 1 week", "1–4 weeks", "1–3 months", "3–6 mon
 const limitations = ["Limited bending", "Limited lifting", "Limited walking", "Limited reaching"];
 
 const OnboardingModal = ({ open, onClose, onComplete }: OnboardingModalProps) => {
+  const { user } = useAuth();
   const [step, setStep] = useState(1);
   const [completed, setCompleted] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Step 1
   const [fullName, setFullName] = useState("");
@@ -48,6 +53,33 @@ const OnboardingModal = ({ open, onClose, onComplete }: OnboardingModalProps) =>
 
   if (!open) return null;
 
+  const saveProfile = async () => {
+    if (!user) return;
+    setIsSaving(true);
+    try {
+      const { error } = await supabase.from("profiles").upsert({
+        id: user.id,
+        full_name: fullName.trim(),
+        age: age ? Number(age) : null,
+        height_cm: height ? Number(height) : null,
+        weight_kg: weight ? Number(weight) : null,
+        injury_area: injuryArea || null,
+        injury_type: injuryType || null,
+        injury_duration: duration || null,
+        limitations: selectedLimitations,
+        recovery_goal: recoveryGoal.trim() || null,
+        onboarding_completed: true,
+        updated_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+    } catch (err) {
+      console.error("Failed to save profile:", err);
+      toast.error("Profile saved locally — sync will retry on next login.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const toggleLimitation = (item: string) => {
     setSelectedLimitations((prev) =>
       prev.includes(item) ? prev.filter((l) => l !== item) : [...prev, item]
@@ -66,10 +98,11 @@ const OnboardingModal = ({ open, onClose, onComplete }: OnboardingModalProps) =>
     }
   };
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (step < TOTAL_STEPS) {
       setStep(step + 1);
     } else {
+      await saveProfile();
       setCompleted(true);
     }
   };
@@ -244,11 +277,17 @@ const OnboardingModal = ({ open, onClose, onComplete }: OnboardingModalProps) =>
                 ) : <div />}
                 <Button
                   onClick={handleNext}
-                  disabled={!canContinue()}
+                  disabled={!canContinue() || isSaving}
                   className="h-11 px-8 rounded-xl text-sm font-medium"
                 >
-                  {step === TOTAL_STEPS ? "Complete Setup" : "Continue"}
-                  <ArrowRight className="h-4 w-4 ml-1" />
+                  {isSaving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <>
+                      {step === TOTAL_STEPS ? "Complete Setup" : "Continue"}
+                      <ArrowRight className="h-4 w-4 ml-1" />
+                    </>
+                  )}
                 </Button>
               </div>
             </>

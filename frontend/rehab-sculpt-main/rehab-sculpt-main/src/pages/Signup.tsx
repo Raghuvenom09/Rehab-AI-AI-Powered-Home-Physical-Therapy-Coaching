@@ -105,9 +105,19 @@ const Signup = () => {
         capturedData.password
       );
       if (authError) throw authError;
-      if (!user) throw new Error("Sign-up succeeded but no user was returned. Check if email confirmation is required.");
 
-      // 2. Save the onboarding profile
+      // If Supabase has email confirmation enabled, user will be non-null
+      // but identities will be empty until confirmed
+      const needsConfirmation = user && (!user.identities || user.identities.length === 0);
+
+      if (!user) {
+        // Email confirmation is enabled and no user object returned
+        toast.success("Check your email! We sent you a confirmation link. Please confirm before logging in.");
+        navigate("/login");
+        return;
+      }
+
+      // 2. Save the onboarding profile (best-effort — may fail if RLS requires confirmed user)
       const { error: profileError } = await supabase.from("profiles").upsert({
         id: user.id,
         full_name: capturedData.fullName,
@@ -122,8 +132,13 @@ const Signup = () => {
         // Non-blocking — auth already succeeded
       }
 
-      toast.success("Account created! Welcome to your rehab journey.");
-      navigate("/");
+      if (needsConfirmation) {
+        toast.success("Account created! Please check your email to confirm before logging in.");
+        navigate("/login");
+      } else {
+        toast.success("Account created! Welcome to your rehab journey.");
+        navigate("/");
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Something went wrong.";
       toast.error(message);

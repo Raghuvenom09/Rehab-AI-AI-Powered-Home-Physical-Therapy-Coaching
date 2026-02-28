@@ -53,7 +53,16 @@ const AuthModal = ({ open, onClose }: AuthModalProps) => {
   const handleLoginSubmit = async (data: LoginForm) => {
     const { error } = await signIn(data.email, data.password);
     if (error) {
-      toast.error(error.message);
+      const msg = error.message?.toLowerCase() ?? "";
+      if (msg.includes("invalid login credentials") || msg.includes("invalid_credentials")) {
+        toast.error("Incorrect email or password. Please try again.");
+      } else if (msg.includes("email not confirmed")) {
+        toast.error("Your email is not confirmed yet. Check your inbox for the confirmation link.");
+      } else if (msg.includes("too many requests") || msg.includes("rate limit")) {
+        toast.error("Too many login attempts. Please wait a moment and try again.");
+      } else {
+        toast.error(error.message || "Something went wrong. Please try again.");
+      }
       return;
     }
     toast.success("Welcome back!");
@@ -61,12 +70,18 @@ const AuthModal = ({ open, onClose }: AuthModalProps) => {
   };
 
   const handleSignupSubmit = async (data: SignupForm) => {
-    const { error } = await signUp(data.email, data.password);
+    const { data: { user }, error } = await signUp(data.email, data.password);
     if (error) {
       toast.error(error.message);
       return;
     }
-    toast.success("Account created!");
+    // If email confirmation is enabled, identities will be empty
+    const needsConfirmation = user && (!user.identities || user.identities.length === 0);
+    if (!user || needsConfirmation) {
+      toast.success("Account created! Please check your email to confirm before logging in.");
+    } else {
+      toast.success("Account created!");
+    }
     onClose(); // parent will open OnboardingModal
   };
 
