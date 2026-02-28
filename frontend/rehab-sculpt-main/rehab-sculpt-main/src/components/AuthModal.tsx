@@ -1,30 +1,79 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Eye, EyeOff, X, ArrowRight } from "lucide-react";
+import { Eye, EyeOff, X, ArrowRight, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import SkeletonBackground from "@/components/SkeletonBackground";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface AuthModalProps {
   open: boolean;
   onClose: () => void;
 }
 
+// ─── Schemas ──────────────────────────────────────────────────────────────────
+
+const loginSchema = z.object({
+  email: z.string().email("Enter a valid email"),
+  password: z.string().min(6, "Password must be at least 6 characters"),
+});
+
+const signupSchema = z.object({
+  fullName: z.string().min(2, "Name is required"),
+  email: z.string().email("Enter a valid email"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+});
+
+type LoginForm = z.infer<typeof loginSchema>;
+type SignupForm = z.infer<typeof signupSchema>;
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
 const AuthModal = ({ open, onClose }: AuthModalProps) => {
-  const navigate = useNavigate();
   const [mode, setMode] = useState<"login" | "signup">("signup");
   const [showPassword, setShowPassword] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [fullName, setFullName] = useState("");
+  const { signIn, signUp } = useAuth();
+  const navigate = useNavigate();
+
+  const loginForm = useForm<LoginForm>({ resolver: zodResolver(loginSchema) });
+  const signupForm = useForm<SignupForm>({
+    resolver: zodResolver(signupSchema),
+  });
 
   if (!open) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    // Both login and signup close the auth modal (parent handles next step)
-    onClose();
+  const isSubmitting =
+    loginForm.formState.isSubmitting || signupForm.formState.isSubmitting;
+
+  const handleLoginSubmit = async (data: LoginForm) => {
+    const { error } = await signIn(data.email, data.password);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success("Welcome back!");
+    onClose(); // parent will open PreSessionCheckModal
+  };
+
+  const handleSignupSubmit = async (data: SignupForm) => {
+    const { error } = await signUp(data.email, data.password);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success("Account created!");
+    onClose(); // parent will open OnboardingModal
+  };
+
+  const switchMode = () => {
+    setMode((m) => (m === "login" ? "signup" : "login"));
+    loginForm.reset();
+    signupForm.reset();
   };
 
   return (
@@ -36,9 +85,7 @@ const AuthModal = ({ open, onClose }: AuthModalProps) => {
       />
 
       {/* Modal */}
-      <div
-        className="relative z-[60] w-full max-w-md mx-4 animate-fade-up"
-      >
+      <div className="relative z-[60] w-full max-w-md mx-4 animate-fade-up">
         <SkeletonBackground />
 
         <div
@@ -46,6 +93,7 @@ const AuthModal = ({ open, onClose }: AuthModalProps) => {
           style={{ borderRadius: 14 }}
         >
           <button
+            aria-label="Close"
             onClick={onClose}
             className="absolute right-4 top-4 text-muted-foreground hover:text-foreground transition-colors"
           >
@@ -66,68 +114,168 @@ const AuthModal = ({ open, onClose }: AuthModalProps) => {
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {mode === "signup" && (
+          {/* ── Login Form ─────────────────────────────────────── */}
+          {mode === "login" && (
+            <form
+              onSubmit={loginForm.handleSubmit(handleLoginSubmit)}
+              className="space-y-4"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="modal-email">Email</Label>
+                <Input
+                  id="modal-email"
+                  type="email"
+                  placeholder="you@example.com"
+                  {...loginForm.register("email")}
+                  className="h-11 bg-background border-border focus-visible:ring-accent"
+                  style={{ borderRadius: 10 }}
+                  disabled={isSubmitting}
+                />
+                {loginForm.formState.errors.email && (
+                  <p className="text-xs text-destructive">
+                    {loginForm.formState.errors.email.message}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="modal-password">Password</Label>
+                <div className="relative">
+                  <Input
+                    id="modal-password"
+                    type={showPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    {...loginForm.register("password")}
+                    className="h-11 bg-background border-border pr-11 focus-visible:ring-accent"
+                    style={{ borderRadius: 10 }}
+                    disabled={isSubmitting}
+                  />
+                  <button
+                    type="button"
+                    aria-label="Toggle password visibility"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+                {loginForm.formState.errors.password && (
+                  <p className="text-xs text-destructive">
+                    {loginForm.formState.errors.password.message}
+                  </p>
+                )}
+              </div>
+
+              <Button
+                type="submit"
+                disabled={isSubmitting}
+                className="w-full h-11 text-sm font-semibold tracking-wide transition-smooth"
+                style={{ borderRadius: 10 }}
+              >
+                {isSubmitting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <>
+                    Resume Session <ArrowRight className="h-4 w-4 ml-1" />
+                  </>
+                )}
+              </Button>
+            </form>
+          )}
+
+          {/* ── Signup Form ────────────────────────────────────── */}
+          {mode === "signup" && (
+            <form
+              onSubmit={signupForm.handleSubmit(handleSignupSubmit)}
+              className="space-y-4"
+            >
               <div className="space-y-2">
                 <Label htmlFor="modal-name">Full Name</Label>
                 <Input
                   id="modal-name"
                   placeholder="Jane Doe"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
+                  {...signupForm.register("fullName")}
                   className="h-11 bg-background border-border focus-visible:ring-accent"
                   style={{ borderRadius: 10 }}
-                  required
+                  disabled={isSubmitting}
                 />
+                {signupForm.formState.errors.fullName && (
+                  <p className="text-xs text-destructive">
+                    {signupForm.formState.errors.fullName.message}
+                  </p>
+                )}
               </div>
-            )}
 
-            <div className="space-y-2">
-              <Label htmlFor="modal-email">Email</Label>
-              <Input
-                id="modal-email"
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="h-11 bg-background border-border focus-visible:ring-accent"
-                style={{ borderRadius: 10 }}
-                required
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="modal-password">Password</Label>
-              <div className="relative">
+              <div className="space-y-2">
+                <Label htmlFor="modal-signup-email">Email</Label>
                 <Input
-                  id="modal-password"
-                  type={showPassword ? "text" : "password"}
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="h-11 bg-background border-border pr-11 focus-visible:ring-accent"
+                  id="modal-signup-email"
+                  type="email"
+                  placeholder="you@example.com"
+                  {...signupForm.register("email")}
+                  className="h-11 bg-background border-border focus-visible:ring-accent"
                   style={{ borderRadius: 10 }}
-                  required
+                  disabled={isSubmitting}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
+                {signupForm.formState.errors.email && (
+                  <p className="text-xs text-destructive">
+                    {signupForm.formState.errors.email.message}
+                  </p>
+                )}
               </div>
-            </div>
 
-            <Button
-              type="submit"
-              className="w-full h-11 text-sm font-semibold tracking-wide transition-smooth"
-              style={{ borderRadius: 10 }}
-            >
-              {mode === "login" ? "Resume Session" : "Continue"}
-              <ArrowRight className="h-4 w-4 ml-1" />
-            </Button>
-          </form>
+              <div className="space-y-2">
+                <Label htmlFor="modal-signup-password">Password</Label>
+                <div className="relative">
+                  <Input
+                    id="modal-signup-password"
+                    type={showPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    {...signupForm.register("password")}
+                    className="h-11 bg-background border-border pr-11 focus-visible:ring-accent"
+                    style={{ borderRadius: 10 }}
+                    disabled={isSubmitting}
+                  />
+                  <button
+                    type="button"
+                    aria-label="Toggle password visibility"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+                {signupForm.formState.errors.password && (
+                  <p className="text-xs text-destructive">
+                    {signupForm.formState.errors.password.message}
+                  </p>
+                )}
+              </div>
+
+              <Button
+                type="submit"
+                disabled={isSubmitting}
+                className="w-full h-11 text-sm font-semibold tracking-wide transition-smooth"
+                style={{ borderRadius: 10 }}
+              >
+                {isSubmitting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <>
+                    Continue <ArrowRight className="h-4 w-4 ml-1" />
+                  </>
+                )}
+              </Button>
+            </form>
+          )}
 
           <p className="text-center text-xs text-muted-foreground mt-4">
             {mode === "login"
@@ -137,10 +285,12 @@ const AuthModal = ({ open, onClose }: AuthModalProps) => {
 
           <div className="mt-4 text-center">
             <span className="text-sm text-muted-foreground">
-              {mode === "login" ? "Don't have an account? " : "Already have an account? "}
+              {mode === "login"
+                ? "Don't have an account? "
+                : "Already have an account? "}
             </span>
             <button
-              onClick={() => setMode(mode === "login" ? "signup" : "login")}
+              onClick={switchMode}
               className="text-sm font-semibold text-primary hover:text-primary/80 transition-colors"
             >
               {mode === "login" ? "Create Account" : "Log In"}

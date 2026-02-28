@@ -1,12 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Slider } from "@/components/ui/slider";
 import { Eye, EyeOff, ArrowRight, ArrowLeft, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import SkeletonBackground from "@/components/SkeletonBackground";
+import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/lib/supabase"; // used for profile upsert
 
 const TOTAL_STEPS = 5;
 
@@ -20,31 +26,50 @@ const INJURY_OPTIONS = [
 
 const CHALLENGE_OPTIONS = ["Bending", "Lifting", "Walking", "Reaching"];
 
+// ─── Step 1 schema ────────────────────────────────────────────────────────────
+
+const step1Schema = z.object({
+  fullName: z.string().min(2, "Name must be at least 2 characters"),
+  email: z.string().email("Enter a valid email address"),
+  password: z
+    .string()
+    .min(8, "Password must be at least 8 characters")
+    .regex(/[A-Z]/, "Must include at least one uppercase letter")
+    .regex(/[0-9]/, "Must include at least one number"),
+});
+
+type Step1Form = z.infer<typeof step1Schema>;
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
 const Signup = () => {
   const navigate = useNavigate();
+  const { signUp } = useAuth();
   const [step, setStep] = useState(1);
   const [direction, setDirection] = useState<"forward" | "back">("forward");
   const [animating, setAnimating] = useState(false);
   const [visible, setVisible] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  // Step 1
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  // Step 1 — from react-hook-form
+  const {
+    register,
+    handleSubmit,
+    watch,
+    formState: { errors },
+  } = useForm<Step1Form>({
+    resolver: zodResolver(step1Schema),
+  });
   const [showPassword, setShowPassword] = useState(false);
 
-  // Step 2
+  // Steps 2-5 state
   const [injuryType, setInjuryType] = useState("");
-
-  // Step 3
   const [painLevel, setPainLevel] = useState([5]);
-
-  // Step 4
   const [challenges, setChallenges] = useState<string[]>([]);
-
-  // Step 5
   const [recoveryGoal, setRecoveryGoal] = useState("");
+
+  // Captured after step1 validation
+  const [capturedData, setCapturedData] = useState<Step1Form | null>(null);
 
   const goTo = (next: number) => {
     if (animating) return;
@@ -58,17 +83,52 @@ const Signup = () => {
     }, 250);
   };
 
+  const handleStep1Submit = (data: Step1Form) => {
+    setCapturedData(data);
+    goTo(2);
+  };
+
   const toggleChallenge = (item: string) => {
     setChallenges((prev) =>
       prev.includes(item) ? prev.filter((c) => c !== item) : [...prev, item]
     );
   };
 
-  const handleSubmit = () => {
+  const handleFinalSubmit = async () => {
+    if (!capturedData) return;
     setSubmitting(true);
-    setTimeout(() => {
+
+    try {
+      // 1. Create the Supabase auth user
+      const { data: { user }, error: authError } = await signUp(
+        capturedData.email,
+        capturedData.password
+      );
+      if (authError) throw authError;
+      if (!user) throw new Error("Sign-up succeeded but no user was returned. Check if email confirmation is required.");
+
+      // 2. Save the onboarding profile
+      const { error: profileError } = await supabase.from("profiles").upsert({
+        id: user.id,
+        full_name: capturedData.fullName,
+        injury_type: injuryType,
+        pain_level: painLevel[0],
+        challenges,
+        recovery_goal: recoveryGoal,
+      });
+
+      if (profileError) {
+        console.error("Profile save error:", profileError.message);
+        // Non-blocking — auth already succeeded
+      }
+
+      toast.success("Account created! Welcome to your rehab journey.");
       navigate("/");
-    }, 1800);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Something went wrong.";
+      toast.error(message);
+      setSubmitting(false);
+    }
   };
 
   const transitionClass = visible
@@ -94,6 +154,7 @@ const Signup = () => {
     </div>
   );
 
+  // ── Submitting animation ──────────────────────────────────────────────────
   if (submitting) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background relative">
@@ -101,7 +162,10 @@ const Signup = () => {
         <div className="relative z-10 text-center animate-fade-up">
           <div className="relative mx-auto w-16 h-16 mb-6">
             <div className="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
-            <div className="absolute inset-2 rounded-full bg-primary/30 animate-ping" style={{ animationDelay: "300ms" }} />
+            <div
+              className="absolute inset-2 rounded-full bg-primary/30 animate-ping"
+              style={{ animationDelay: "300ms" }}
+            />
             <div className="absolute inset-4 rounded-full bg-primary flex items-center justify-center">
               <Loader2 className="h-5 w-5 text-primary-foreground animate-spin" />
             </div>
@@ -131,7 +195,7 @@ const Signup = () => {
           className={`transition-all duration-250 ease-out ${transitionClass}`}
           style={{ transitionDuration: "250ms" }}
         >
-          {/* ── Step 1: Account ── */}
+          {/* ── Step 1: Account ───────────────────────────────────────────── */}
           {step === 1 && (
             <div>
               <div className="text-center mb-8">
@@ -150,32 +214,39 @@ const Signup = () => {
                 className="bg-card/80 backdrop-blur-sm border-0 shadow-lg p-8"
                 style={{ borderRadius: 14 }}
               >
-                <div className="space-y-5">
+                <form
+                  onSubmit={handleSubmit(handleStep1Submit)}
+                  className="space-y-5"
+                >
                   <div className="space-y-2">
                     <Label htmlFor="fullName">Full Name</Label>
                     <Input
                       id="fullName"
                       placeholder="Jane Doe"
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
+                      {...register("fullName")}
                       className="h-12 bg-background border-border focus-visible:ring-accent"
                       style={{ borderRadius: 10 }}
-                      required
                     />
+                    {errors.fullName && (
+                      <p className="text-xs text-destructive">{errors.fullName.message}</p>
+                    )}
                   </div>
+
                   <div className="space-y-2">
                     <Label htmlFor="signupEmail">Email</Label>
                     <Input
                       id="signupEmail"
                       type="email"
                       placeholder="you@example.com"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
+                      {...register("email")}
                       className="h-12 bg-background border-border focus-visible:ring-accent"
                       style={{ borderRadius: 10 }}
-                      required
                     />
+                    {errors.email && (
+                      <p className="text-xs text-destructive">{errors.email.message}</p>
+                    )}
                   </div>
+
                   <div className="space-y-2">
                     <Label htmlFor="signupPassword">Password</Label>
                     <div className="relative">
@@ -183,32 +254,37 @@ const Signup = () => {
                         id="signupPassword"
                         type={showPassword ? "text" : "password"}
                         placeholder="••••••••"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
+                        {...register("password")}
                         className="h-12 bg-background border-border pr-11 focus-visible:ring-accent"
                         style={{ borderRadius: 10 }}
-                        required
                       />
                       <button
                         type="button"
+                        aria-label="Toggle password visibility"
                         onClick={() => setShowPassword(!showPassword)}
                         className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                       >
-                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        {showPassword ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
                       </button>
                     </div>
+                    {errors.password && (
+                      <p className="text-xs text-destructive">{errors.password.message}</p>
+                    )}
                   </div>
 
                   <Button
-                    onClick={() => goTo(2)}
-                    disabled={!fullName || !email || !password}
+                    type="submit"
                     className="w-full h-12 text-sm font-semibold tracking-wide transition-smooth"
                     style={{ borderRadius: 10 }}
                   >
                     Continue
                     <ArrowRight className="h-4 w-4 ml-1" />
                   </Button>
-                </div>
+                </form>
 
                 <p className="text-center text-xs text-muted-foreground mt-4">
                   Your information stays private and secure.
@@ -229,7 +305,7 @@ const Signup = () => {
             </div>
           )}
 
-          {/* ── Step 2: Injury Focus ── */}
+          {/* ── Step 2: Injury Focus ──────────────────────────────────────── */}
           {step === 2 && (
             <div>
               <div className="text-center mb-8">
@@ -292,7 +368,7 @@ const Signup = () => {
             </div>
           )}
 
-          {/* ── Step 3: Pain Level ── */}
+          {/* ── Step 3: Pain Level ───────────────────────────────────────── */}
           {step === 3 && (
             <div>
               <div className="text-center mb-8">
@@ -312,9 +388,7 @@ const Signup = () => {
                 style={{ borderRadius: 14 }}
               >
                 <div className="text-center mb-8">
-                  <span
-                    className="text-6xl font-bold text-primary font-mono-data"
-                  >
+                  <span className="text-6xl font-bold text-primary font-mono-data">
                     {painLevel[0]}
                   </span>
                   <span className="text-xl text-muted-foreground ml-1">/ 10</span>
@@ -358,7 +432,7 @@ const Signup = () => {
             </div>
           )}
 
-          {/* ── Step 4: Daily Challenges ── */}
+          {/* ── Step 4: Daily Challenges ─────────────────────────────────── */}
           {step === 4 && (
             <div>
               <div className="text-center mb-8">
@@ -415,7 +489,7 @@ const Signup = () => {
             </div>
           )}
 
-          {/* ── Step 5: Goal ── */}
+          {/* ── Step 5: Goal ─────────────────────────────────────────────── */}
           {step === 5 && (
             <div>
               <div className="text-center mb-8">
@@ -458,7 +532,7 @@ const Signup = () => {
                   Back
                 </Button>
                 <Button
-                  onClick={handleSubmit}
+                  onClick={handleFinalSubmit}
                   disabled={!recoveryGoal}
                   className="flex-1 h-12 text-sm font-semibold tracking-wide transition-smooth"
                   style={{ borderRadius: 10 }}

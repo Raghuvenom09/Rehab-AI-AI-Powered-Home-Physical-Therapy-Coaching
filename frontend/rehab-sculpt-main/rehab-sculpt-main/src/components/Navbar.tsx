@@ -1,14 +1,26 @@
 import { NavLink } from "@/components/NavLink";
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { LogOut, LogIn } from "lucide-react";
+import { toast } from "sonner";
+import { useAuth } from "@/contexts/AuthContext";
 
 const Navbar = () => {
   const [scrolled, setScrolled] = useState(false);
+  const { user, signOut } = useAuth();
+  const navigate = useNavigate();
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 40);
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
+
+  const handleSignOut = async () => {
+    await signOut();
+    toast.success("Signed out successfully.");
+    navigate("/");
+  };
 
   return (
     <nav
@@ -29,7 +41,7 @@ const Navbar = () => {
           Rehab<span className={scrolled ? "text-primary" : "text-white/80"}>AI</span>
         </NavLink>
 
-        <div className="flex items-center gap-8">
+        <div className="flex items-center gap-6">
           {[
             { to: "/", label: "Home" },
             { to: "/session", label: "Session" },
@@ -44,14 +56,43 @@ const Navbar = () => {
                   ? "text-muted-foreground hover:text-foreground"
                   : "text-white/80 hover:text-white"
               }`}
-              activeClassName={scrolled
-                ? "text-primary after:absolute after:bottom-[-18px] after:left-0 after:right-0 after:h-[2px] after:bg-primary after:content-['']"
-                : "text-white after:absolute after:bottom-[-18px] after:left-0 after:right-0 after:h-[2px] after:bg-white after:content-['']"
+              activeClassName={
+                scrolled
+                  ? "text-primary after:absolute after:bottom-[-18px] after:left-0 after:right-0 after:h-[2px] after:bg-primary after:content-['']"
+                  : "text-white after:absolute after:bottom-[-18px] after:left-0 after:right-0 after:h-[2px] after:bg-white after:content-['']"
               }
             >
               {link.label}
             </NavLink>
           ))}
+
+          {/* Auth button */}
+          {user ? (
+            <button
+              onClick={handleSignOut}
+              aria-label="Sign out"
+              className={`flex items-center gap-1.5 text-sm font-medium transition-colors duration-300 ${
+                scrolled
+                  ? "text-muted-foreground hover:text-destructive"
+                  : "text-white/80 hover:text-white"
+              }`}
+            >
+              <LogOut className="h-4 w-4" />
+              Sign Out
+            </button>
+          ) : (
+            <NavLink
+              to="/login"
+              className={`flex items-center gap-1.5 text-sm font-medium transition-colors duration-300 ${
+                scrolled
+                  ? "text-muted-foreground hover:text-foreground"
+                  : "text-white/80 hover:text-white"
+              }`}
+            >
+              <LogIn className="h-4 w-4" />
+              Log In
+            </NavLink>
+          )}
         </div>
       </div>
     </nav>

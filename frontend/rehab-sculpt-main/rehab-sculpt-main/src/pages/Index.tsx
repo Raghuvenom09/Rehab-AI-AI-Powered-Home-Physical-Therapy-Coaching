@@ -9,6 +9,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { useRef, useState, useEffect } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 import demoVideo from "@/assets/kaia_msk_loop_web_02.mp4";
 import demoPreview from "@/assets/demo-preview.mov";
 import AuthModal from "@/components/AuthModal";
@@ -59,13 +60,13 @@ const features = [
 
 const Index = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const { user } = useAuth();
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [isPreSessionOpen, setIsPreSessionOpen] = useState(false);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   const handleStartSession = () => {
-    if (isLoggedIn) {
+    if (user) {
       setIsPreSessionOpen(true);
     } else {
       setIsAuthModalOpen(true);
@@ -74,7 +75,6 @@ const Index = () => {
 
   const handleOnboardingComplete = () => {
     setIsOnboardingOpen(false);
-    setIsLoggedIn(true);
     setIsPreSessionOpen(true);
   };
 
