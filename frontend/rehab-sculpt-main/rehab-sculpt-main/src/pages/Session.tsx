@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
-import { Loader2, Play, Square, ChevronRight, Trophy, Dumbbell } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Loader2, Play, Square, ChevronRight, Trophy, Dumbbell, Volume2, VolumeX, Wifi, WifiOff, Gauge } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import SkeletonWireframe from "@/components/SkeletonWireframe";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocation } from "react-router-dom";
 import {
@@ -13,6 +12,8 @@ import {
   useEndSession,
   useSessionSets,
 } from "@/hooks/use-session";
+import { usePoseWebSocket } from "@/hooks/use-pose-websocket";
+import { useVoiceFeedback } from "@/hooks/use-voice-feedback";
 import type { JointAngle, ExerciseStatus, Exercise } from "@/lib/database.types";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -23,33 +24,203 @@ const statusConfig = {
   incorrect: { color: "bg-destructive", label: "Incorrect", textColor: "text-destructive" },
 };
 
-/** Simulate joint-angle readings — replace with real pose estimation later */
-function simulateJointAngles(): JointAngle[] {
-  const joints = ["Left Knee", "Right Knee", "Hip Flexion", "Left Shoulder", "Right Elbow"];
-  const pick = (): ExerciseStatus => {
-    const r = Math.random();
-    return r < 0.6 ? "correct" : r < 0.85 ? "adjust" : "incorrect";
-  };
-  return joints.map((label) => ({
-    label,
-    angle: Math.round(80 + Math.random() * 90),
-    status: pick(),
-  }));
-}
+// ─── Skeleton Overlay Colors ──────────────────────────────────────────────────
 
-function overallFromAngles(angles: JointAngle[]): ExerciseStatus {
-  if (angles.some((a) => a.status === "incorrect")) return "incorrect";
-  if (angles.some((a) => a.status === "adjust")) return "adjust";
-  return "correct";
-}
+const SKELETON_COLORS = {
+  joint: "hsl(185, 100%, 55%)",
+  bone: "hsl(185, 100%, 55%)",
+  correct: "#22c55e",
+  adjust: "#eab308",
+  incorrect: "#ef4444",
+};
 
-function accuracyFromAngles(angles: JointAngle[]): number {
-  const score = angles.reduce(
-    (sum, a) =>
-      sum + (a.status === "correct" ? 100 : a.status === "adjust" ? 60 : 20),
-    0
+// ─── Webcam + Canvas component ────────────────────────────────────────────────
+
+function WebcamOverlay({
+  landmarks,
+  connections,
+  isRecording,
+  onFrame,
+}: {
+  landmarks: number[][];
+  connections: number[][];
+  isRecording: boolean;
+  onFrame: (base64: string) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const captureCanvasRef = useRef<HTMLCanvasElement>(null);
+  const frameTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+
+  // Start webcam
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+
+    async function startCamera() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480, facingMode: "user" },
+          audio: false,
+        });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          setCameraReady(true);
+          setCameraError(null);
+        }
+      } catch (err) {
+        setCameraError(
+          "Camera access denied. Please allow camera permissions."
+        );
+        console.error("Camera error:", err);
+      }
+    }
+
+    startCamera();
+    return () => {
+      stream?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  // Capture frames at ~10 FPS
+  useEffect(() => {
+    if (!cameraReady || !isRecording) {
+      if (frameTimer.current) clearInterval(frameTimer.current);
+      return;
+    }
+
+    frameTimer.current = setInterval(() => {
+      const video = videoRef.current;
+      const capture = captureCanvasRef.current;
+      if (!video || !capture || video.readyState < 2) return;
+
+      capture.width = 640;
+      capture.height = 480;
+      const ctx = capture.getContext("2d");
+      if (!ctx) return;
+
+      ctx.drawImage(video, 0, 0, 640, 480);
+      const base64 = capture.toDataURL("image/jpeg", 0.6);
+      onFrame(base64);
+    }, 100); // ~10 FPS
+
+    return () => {
+      if (frameTimer.current) clearInterval(frameTimer.current);
+    };
+  }, [cameraReady, isRecording, onFrame]);
+
+  // Draw skeleton overlay
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    // Match canvas to video dimensions
+    const rect = video.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (!landmarks.length) return;
+
+    // Scale landmarks from pixel coords (640x480) to canvas size
+    const scaleX = canvas.width / 640;
+    const scaleY = canvas.height / 480;
+
+    // Draw bones
+    if (connections.length) {
+      ctx.strokeStyle = SKELETON_COLORS.bone;
+      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+
+      for (const [i, j] of connections) {
+        if (i >= landmarks.length || j >= landmarks.length) continue;
+        const [x1, y1] = landmarks[i];
+        const [x2, y2] = landmarks[j];
+        if (x1 === 0 && y1 === 0) continue;
+        if (x2 === 0 && y2 === 0) continue;
+
+        ctx.beginPath();
+        ctx.moveTo(x1 * scaleX, y1 * scaleY);
+        ctx.lineTo(x2 * scaleX, y2 * scaleY);
+        ctx.stroke();
+      }
+    }
+
+    // Draw joints
+    for (const [x, y] of landmarks) {
+      if (x === 0 && y === 0) continue;
+      ctx.beginPath();
+      ctx.arc(x * scaleX, y * scaleY, 4, 0, Math.PI * 2);
+      ctx.fillStyle = SKELETON_COLORS.joint;
+      ctx.fill();
+    }
+  }, [landmarks, connections]);
+
+  if (cameraError) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-xl border border-border bg-card p-8 text-center">
+        <div>
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
+            <WifiOff className="h-8 w-8 text-destructive" />
+          </div>
+          <p className="text-sm text-muted-foreground">{cameraError}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative aspect-video w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="h-full w-full object-cover"
+        style={{ transform: "scaleX(-1)" }}
+      />
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 h-full w-full"
+        style={{ transform: "scaleX(-1)" }}
+      />
+      <canvas ref={captureCanvasRef} className="hidden" />
+
+      {/* Corner brackets */}
+      {["top-2 left-2", "top-2 right-2", "bottom-2 left-2", "bottom-2 right-2"].map(
+        (pos, i) => (
+          <div
+            key={i}
+            className={`absolute ${pos} h-4 w-4 border-primary/30 ${
+              i < 2 ? "border-t" : "border-b"
+            } ${i % 2 === 0 ? "border-l" : "border-r"}`}
+          />
+        )
+      )}
+
+      {/* Recording indicator */}
+      <div className="absolute top-4 right-4 flex items-center gap-2">
+        {isRecording ? (
+          <>
+            <div className="h-2 w-2 rounded-full bg-destructive status-pulse" />
+            <span className="font-mono-data text-[10px] uppercase tracking-widest text-white/80 drop-shadow">
+              Recording
+            </span>
+          </>
+        ) : (
+          <span className="font-mono-data text-[10px] uppercase tracking-widest text-white/80 drop-shadow">
+            Paused
+          </span>
+        )}
+      </div>
+    </div>
   );
-  return Math.round(score / angles.length);
 }
 
 // ─── Exercise picker (no active session) ──────────────────────────────────────
@@ -82,7 +253,6 @@ function ExercisePicker({
     );
   }
 
-  // Group by injury type
   const grouped = exercises.reduce<Record<string, Exercise[]>>((acc, ex) => {
     (acc[ex.injury_type] ??= []).push(ex);
     return acc;
@@ -144,43 +314,51 @@ function ActiveSessionView({
   const targetSets = session.exercise.target_sets;
   const targetReps = session.exercise.target_reps;
 
-  const [reps, setReps] = useState(0);
-  const [jointAngles, setJointAngles] = useState<JointAngle[]>(simulateJointAngles);
-  const [overallStatus, setOverallStatus] = useState<ExerciseStatus>("correct");
   const [isRecording, setIsRecording] = useState(true);
 
-  // Simulate pose estimation ticks — replace with real camera feed later
-  useEffect(() => {
-    if (!isRecording) return;
-    const interval = setInterval(() => {
-      const newAngles = simulateJointAngles();
-      setJointAngles(newAngles);
-      setOverallStatus(overallFromAngles(newAngles));
-      setReps((r) => {
-        if (r < targetReps) return r + 1;
-        return r;
-      });
-    }, 2500);
-    return () => clearInterval(interval);
-  }, [isRecording, targetReps]);
+  // ── Pose WebSocket ──
+  const {
+    sendFrame,
+    jointAngles,
+    landmarks,
+    connections,
+    overallStatus,
+    accuracy,
+    repCount,
+    feedback,
+    romSummary,
+    inferenceMs,
+    isConnected,
+  } = usePoseWebSocket(session.exercise.name);
 
-  // Auto-save set when reps hit target
+  // ── Voice feedback ──
+  const { speak, enabled: voiceEnabled, toggle: toggleVoice } = useVoiceFeedback();
+
+  // Speak feedback when status is not correct
   useEffect(() => {
-    if (reps === targetReps && isRecording && !saveSet.isPending) {
+    if (feedback && overallStatus !== "correct") {
+      speak(feedback);
+    }
+  }, [feedback, overallStatus, speak]);
+
+  // Auto-save set when rep count hits target
+  const savingRef = useRef(false);
+  useEffect(() => {
+    if (repCount >= targetReps && isRecording && !savingRef.current) {
+      savingRef.current = true;
       handleSaveSet();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reps]);
+  }, [repCount]);
 
   const handleSaveSet = useCallback(async () => {
     setIsRecording(false);
-    const accuracy = accuracyFromAngles(jointAngles);
 
     try {
       await saveSet.mutateAsync({
         sessionId: session.id,
         setNumber: currentSetNumber,
-        repsCompleted: reps,
+        repsCompleted: repCount || targetReps,
         accuracy,
         jointAngles,
         feedback:
@@ -192,7 +370,6 @@ function ActiveSessionView({
       });
 
       if (currentSetNumber >= targetSets) {
-        // All sets done — complete the session
         await endSession.mutateAsync({
           sessionId: session.id,
           status: "completed",
@@ -200,21 +377,25 @@ function ActiveSessionView({
         toast.success("Session complete! Great work 💪");
       } else {
         toast.success(`Set ${currentSetNumber} saved! Rest up, then continue.`);
-        // Reset for next set
-        setReps(0);
-        setTimeout(() => setIsRecording(true), 1500);
+        setTimeout(() => {
+          setIsRecording(true);
+          savingRef.current = false;
+        }, 1500);
       }
     } catch {
       toast.error("Failed to save set. Please try again.");
       setIsRecording(true);
+      savingRef.current = false;
     }
   }, [
     jointAngles,
-    reps,
+    repCount,
     overallStatus,
+    accuracy,
     session.id,
     currentSetNumber,
     targetSets,
+    targetReps,
     saveSet,
     endSession,
   ]);
@@ -236,41 +417,16 @@ function ActiveSessionView({
       <div className="flex h-[calc(100vh-56px)] flex-col md:flex-row">
         {/* Left — Camera */}
         <div className="flex flex-1 items-center justify-center p-6 md:w-[60%]">
-          <div className="relative aspect-video w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-            <div className="absolute inset-4 flex items-center justify-center rounded-lg border border-border/50">
-              <SkeletonWireframe className="h-3/4 w-auto opacity-90" />
-            </div>
-
-            {["top-2 left-2", "top-2 right-2", "bottom-2 left-2", "bottom-2 right-2"].map(
-              (pos, i) => (
-                <div
-                  key={i}
-                  className={`absolute ${pos} h-4 w-4 border-primary/30 ${
-                    i < 2 ? "border-t" : "border-b"
-                  } ${i % 2 === 0 ? "border-l" : "border-r"}`}
-                />
-              )
-            )}
-
-            <div className="absolute top-4 right-4 flex items-center gap-2">
-              {isRecording ? (
-                <>
-                  <div className="h-2 w-2 rounded-full bg-destructive status-pulse" />
-                  <span className="font-mono-data text-[10px] uppercase tracking-widest text-muted-foreground">
-                    Recording
-                  </span>
-                </>
-              ) : (
-                <span className="font-mono-data text-[10px] uppercase tracking-widest text-muted-foreground">
-                  Paused
-                </span>
-              )}
-            </div>
-          </div>
+          <WebcamOverlay
+            landmarks={landmarks}
+            connections={connections}
+            isRecording={isRecording}
+            onFrame={sendFrame}
+          />
         </div>
 
         {/* Right — Feedback */}
-        <div className="flex flex-col justify-center border-l border-border p-8 md:w-[40%]">
+        <div className="flex flex-col justify-center border-l border-border p-8 md:w-[40%] overflow-y-auto">
           <h2
             className="text-2xl text-foreground md:text-3xl"
             style={{ fontFamily: "'DM Serif Display', serif" }}
@@ -278,6 +434,29 @@ function ActiveSessionView({
             {session.exercise.name}
           </h2>
 
+          {/* Connection + performance status */}
+          <div className="mt-2 flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              {isConnected ? (
+                <Wifi className="h-3.5 w-3.5 text-success" />
+              ) : (
+                <WifiOff className="h-3.5 w-3.5 text-destructive" />
+              )}
+              <span className="text-[10px] font-mono-data text-muted-foreground uppercase tracking-wider">
+                {isConnected ? "Connected" : "Reconnecting..."}
+              </span>
+            </div>
+            {inferenceMs > 0 && (
+              <div className="flex items-center gap-1.5">
+                <Gauge className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-[10px] font-mono-data text-muted-foreground">
+                  {inferenceMs}ms
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Overall status */}
           <div className="mt-4 flex items-center gap-3">
             <div
               className={`h-3 w-3 rounded-full ${statusConfig[overallStatus].color} status-pulse`}
@@ -289,9 +468,17 @@ function ActiveSessionView({
             </span>
           </div>
 
+          {/* Feedback text */}
+          {feedback && (
+            <p className="mt-2 text-sm text-muted-foreground italic">
+              "{feedback}"
+            </p>
+          )}
+
+          {/* Reps + sets */}
           <div className="mt-6 flex items-baseline gap-2">
             <span className="font-mono-data text-4xl font-bold text-foreground">
-              {reps}
+              {repCount}
             </span>
             <span className="text-sm text-muted-foreground">/ {targetReps} reps</span>
             <span className="ml-4 text-sm text-muted-foreground">
@@ -299,31 +486,78 @@ function ActiveSessionView({
             </span>
           </div>
 
+          {/* Accuracy */}
+          <div className="mt-3 flex items-center gap-2">
+            <div className="flex-1 h-1.5 rounded-full bg-border overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-500 ease-out"
+                style={{
+                  width: `${accuracy}%`,
+                  backgroundColor:
+                    accuracy >= 80
+                      ? SKELETON_COLORS.correct
+                      : accuracy >= 50
+                      ? SKELETON_COLORS.adjust
+                      : SKELETON_COLORS.incorrect,
+                }}
+              />
+            </div>
+            <span className="font-mono-data text-xs font-semibold text-foreground w-10 text-right">
+              {accuracy}%
+            </span>
+          </div>
+
           {/* Joint angles */}
-          <div className="mt-8 space-y-2.5">
+          <div className="mt-6 space-y-2">
             <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
               Joint Angles
             </h3>
-            {jointAngles.map((joint) => (
-              <div
-                key={joint.label}
-                className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-2.5"
-              >
-                <span className="text-sm text-foreground">{joint.label}</span>
-                <div className="flex items-center gap-3">
-                  <span className="font-mono-data text-sm font-bold text-foreground">
-                    {joint.angle}°
-                  </span>
-                  <div
-                    className={`h-2 w-2 rounded-full ${statusConfig[joint.status].color}`}
-                  />
+            {jointAngles.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-2">
+                Waiting for pose data...
+              </p>
+            ) : (
+              jointAngles.map((joint) => (
+                <div
+                  key={joint.label}
+                  className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-2.5"
+                >
+                  <span className="text-sm text-foreground">{joint.label}</span>
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono-data text-sm font-bold text-foreground">
+                      {joint.angle}°
+                    </span>
+                    <div
+                      className={`h-2 w-2 rounded-full ${statusConfig[joint.status].color}`}
+                    />
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
 
+          {/* ROM Summary */}
+          {Object.keys(romSummary).length > 0 && (
+            <div className="mt-6 space-y-2">
+              <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Range of Motion
+              </h3>
+              {Object.entries(romSummary).map(([joint, data]) => (
+                <div
+                  key={joint}
+                  className="flex items-center justify-between rounded-lg border border-border bg-card/50 px-4 py-2"
+                >
+                  <span className="text-xs text-muted-foreground">{joint}</span>
+                  <span className="font-mono-data text-xs text-foreground">
+                    {data.min}° — {data.max}° ({data.range}°)
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Controls */}
-          <div className="mt-8 flex items-center gap-3">
+          <div className="mt-8 flex items-center gap-3 flex-wrap">
             {isRecording ? (
               <Button
                 variant="outline"
@@ -342,6 +576,20 @@ function ActiveSessionView({
                 <Play className="h-3.5 w-3.5" /> Resume
               </Button>
             )}
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={toggleVoice}
+              className="gap-1.5"
+            >
+              {voiceEnabled ? (
+                <Volume2 className="h-3.5 w-3.5" />
+              ) : (
+                <VolumeX className="h-3.5 w-3.5" />
+              )}
+              {voiceEnabled ? "Voice On" : "Voice Off"}
+            </Button>
 
             <Button
               variant="ghost"
@@ -393,7 +641,6 @@ const Session = () => {
   const startSession = useStartSession();
   const [justCompleted, setJustCompleted] = useState(false);
 
-  // Pain data passed from PreSessionCheckModal via router state
   const preSessionState = location.state as {
     painLevelBefore?: number;
     sorenessAreas?: string[];
@@ -413,7 +660,6 @@ const Session = () => {
     }
   };
 
-  // Detect session completion
   useEffect(() => {
     if (!isLoading && !activeSession && startSession.isSuccess) {
       setJustCompleted(true);
