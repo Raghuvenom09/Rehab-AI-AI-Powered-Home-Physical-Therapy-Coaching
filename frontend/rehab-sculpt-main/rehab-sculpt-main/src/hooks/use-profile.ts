@@ -18,14 +18,33 @@ export function useProfile() {
     queryKey: keys.profile(user?.id ?? ""),
     enabled: !!user,
     queryFn: async () => {
+      // Try to get existing profile
       const { data, error } = await supabase
         .from("profiles")
         .select("*")
         .eq("id", user!.id)
-        .single();
+        .maybeSingle();
+
+      // If profile exists, return it
+      if (data) return data as Profile;
+
+      // If no profile found, create one
+      if (!data && !error) {
+        const { data: newProfile, error: createError } = await supabase
+          .from("profiles")
+          .insert({
+            id: user!.id,
+            full_name: user?.user_metadata?.full_name || null,
+          })
+          .select()
+          .single();
+
+        if (createError) throw createError;
+        return newProfile as Profile;
+      }
 
       if (error) throw error;
-      return data as Profile;
+      return null as unknown as Profile;
     },
   });
 }

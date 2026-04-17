@@ -4,42 +4,32 @@ import { useAuth } from "@/contexts/AuthContext";
 import type {
   Exercise,
   SessionRow,
-  SessionSet,
+  SessionExercise,
   JointAngle,
 } from "@/lib/database.types";
 
-// ─── Keys ─────────────────────────────────────────────────────────────────────
-
 const keys = {
-  exercises: (injuryType?: string) => ["exercises", injuryType] as const,
+  exercises: () => ["exercises"] as const,
   activeSession: (userId: string) => ["session", "active", userId] as const,
   sessionSets: (sessionId: string) => ["session", "sets", sessionId] as const,
+  sessionExercises: (sessionId: string) => ["session", "exercises", sessionId] as const,
   sessionHistory: (userId: string) => ["sessions", "history", userId] as const,
+  progressStats: (userId: string) => ["progress", "stats", userId] as const,
 };
 
-// ─── Fetch exercises (optionally filtered by injury type) ─────────────────────
-
-export function useExercises(injuryType?: string) {
+export function useExercises() {
   return useQuery({
-    queryKey: keys.exercises(injuryType),
+    queryKey: keys.exercises(),
     queryFn: async () => {
-      let query = supabase
+      const { data, error } = await supabase
         .from("exercises")
         .select("*")
-        .order("difficulty", { ascending: true });
-
-      if (injuryType && injuryType !== "Other") {
-        query = query.eq("injury_type", injuryType);
-      }
-
-      const { data, error } = await query;
+        .order("name");
       if (error) throw error;
-      return data as Exercise[];
+      return (data ?? []) as Exercise[];
     },
   });
 }
-
-// ─── Get the user's active (in_progress) session ─────────────────────────────
 
 export function useActiveSession() {
   const { user } = useAuth();
@@ -47,25 +37,37 @@ export function useActiveSession() {
     queryKey: keys.activeSession(user?.id ?? ""),
     enabled: !!user,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data: session, error } = await supabase
         .from("sessions")
-        .select("*, exercise:exercises(*)")
+        .select("*")
         .eq("user_id", user!.id)
         .eq("status", "in_progress")
         .order("started_at", { ascending: false })
         .limit(1)
         .maybeSingle();
-
       if (error) throw error;
-      return data as (SessionRow & { exercise: Exercise }) | null;
+      if (!session) return null;
+
+      const { data: sessionExercises, error: exError } = await supabase
+        .from("session_exercises")
+        .select("*, exercise:exercises(*)")
+        .eq("session_id", session.id);
+      if (exError) throw exError;
+
+      return {
+        ...(session as SessionRow),
+        session_exercises: sessionExercises ?? [],
+      };
     },
   });
 }
 
-// ─── Start a new session ──────────────────────────────────────────────────────
-
 interface StartSessionInput {
   exerciseId: string;
+  sets?: number;
+  reps?: number;
+  painLevel?: number;
+  notes?: string;
   painLevelBefore?: number;
   sorenessAreas?: string[];
   sharpPain?: string;
@@ -79,21 +81,36 @@ export function useStartSession() {
     mutationFn: async (input: StartSessionInput) => {
       if (!user) throw new Error("Not authenticated");
 
-      const { data, error } = await supabase
+      const { data: session, error: sessionError } = await supabase
         .from("sessions")
         .insert({
           user_id: user.id,
-          exercise_id: input.exerciseId,
+          title: "Rehab Session",
           status: "in_progress",
           pain_level_before: input.painLevelBefore ?? null,
           soreness_areas: input.sorenessAreas ?? null,
           sharp_pain: input.sharpPain ?? null,
         })
+        .select()
+        .single();
+      if (sessionError) throw sessionError;
+
+      const { data: sessionEx, error: exError } = await supabase
+        .from("session_exercises")
+        .insert({
+          session_id: session.id,
+          exercise_id: input.exerciseId,
+          sets: input.sets ?? null,
+          reps: input.reps ?? null,
+          pain_level: input.painLevel ?? null,
+          notes: input.notes ?? null,
+          completed: false,
+        })
         .select("*, exercise:exercises(*)")
         .single();
+      if (exError) throw exError;
 
-      if (error) throw error;
-      return data as SessionRow & { exercise: Exercise };
+      return { session: session as SessionRow, sessionExercise: sessionEx as SessionExercise & { exercise: Exercise } };
     },
     onSuccess: () => {
       if (user) qc.invalidateQueries({ queryKey: keys.activeSession(user.id) });
@@ -101,14 +118,10 @@ export function useStartSession() {
   });
 }
 
-// ─── Save a completed set ─────────────────────────────────────────────────────
-
 interface SaveSetInput {
-  sessionId: string;
-  setNumber: number;
+  sessionExerciseId: string;
   repsCompleted: number;
   accuracy?: number;
-  jointAngles?: JointAngle[];
   feedback?: string;
 }
 
@@ -118,38 +131,25 @@ export function useSaveSet() {
   return useMutation({
     mutationFn: async (input: SaveSetInput) => {
       const { data, error } = await supabase
-        .from("session_sets")
-        .insert({
-          session_id: input.sessionId,
-          set_number: input.setNumber,
-          reps_completed: input.repsCompleted,
-          accuracy: input.accuracy ?? null,
-          joint_angles: input.jointAngles ?? null,
-          feedback: input.feedback ?? null,
+        .from("session_exercises")
+        .update({
+          reps: input.repsCompleted,
+          pain_level: Math.round(Math.min(100, Math.max(0, input.accuracy ?? 0))),
+          notes: input.feedback ?? null,
+          completed: true,
         })
+        .eq("id", input.sessionExerciseId)
         .select()
         .single();
-
       if (error) throw error;
-
-      // Also update the session totals
-      await supabase
-        .rpc("update_session_totals", {
-          p_session_id: input.sessionId,
-        })
-        .throwOnError();
-
-      return data as SessionSet;
+      return data as SessionExercise;
     },
     onSuccess: (data) => {
-      qc.invalidateQueries({
-        queryKey: keys.sessionSets(data.session_id),
-      });
+      qc.invalidateQueries({ queryKey: keys.sessionExercises(data.session_id) });
+      qc.invalidateQueries({ queryKey: ["progress", "stats"] });
     },
   });
 }
-
-// ─── Complete / cancel a session ──────────────────────────────────────────────
 
 export function useEndSession() {
   const { user } = useAuth();
@@ -158,39 +158,21 @@ export function useEndSession() {
   return useMutation({
     mutationFn: async ({
       sessionId,
+      startedAt,
       status,
     }: {
       sessionId: string;
+      startedAt: string;
       status: "completed" | "cancelled";
     }) => {
-      // Calculate average accuracy from sets
-      const { data: sets } = await supabase
-        .from("session_sets")
-        .select("reps_completed, accuracy")
-        .eq("session_id", sessionId);
-
-      const totalReps =
-        sets?.reduce((sum, s) => sum + s.reps_completed, 0) ?? 0;
-      const accuracies =
-        sets?.filter((s) => s.accuracy != null).map((s) => s.accuracy!) ?? [];
-      const avgAccuracy =
-        accuracies.length > 0
-          ? accuracies.reduce((a, b) => a + b, 0) / accuracies.length
-          : null;
-
+      const started = new Date(startedAt).getTime();
+      const durationSec = Math.round((Date.now() - started) / 1000);
       const { data, error } = await supabase
         .from("sessions")
-        .update({
-          status,
-          completed_at: new Date().toISOString(),
-          total_reps: totalReps,
-          total_sets: sets?.length ?? 0,
-          avg_accuracy: avgAccuracy,
-        })
+        .update({ status, ended_at: new Date().toISOString(), duration_sec: durationSec })
         .eq("id", sessionId)
         .select()
         .single();
-
       if (error) throw error;
       return data as SessionRow;
     },
@@ -198,31 +180,27 @@ export function useEndSession() {
       if (user) {
         qc.invalidateQueries({ queryKey: keys.activeSession(user.id) });
         qc.invalidateQueries({ queryKey: keys.sessionHistory(user.id) });
+        qc.invalidateQueries({ queryKey: keys.progressStats(user.id) });
+        qc.refetchQueries({ queryKey: keys.progressStats(user.id) });
       }
     },
   });
 }
 
-// ─── Fetch sets for a session ─────────────────────────────────────────────────
-
-export function useSessionSets(sessionId: string | undefined) {
+export function useSessionExercises(sessionId: string | undefined) {
   return useQuery({
-    queryKey: keys.sessionSets(sessionId ?? ""),
+    queryKey: keys.sessionExercises(sessionId ?? ""),
     enabled: !!sessionId,
     queryFn: async () => {
       const { data, error } = await supabase
-        .from("session_sets")
-        .select("*")
-        .eq("session_id", sessionId!)
-        .order("set_number", { ascending: true });
-
+        .from("session_exercises")
+        .select("*, exercise:exercises(*)")
+        .eq("session_id", sessionId!);
       if (error) throw error;
-      return data as SessionSet[];
+      return data as (SessionExercise & { exercise: Exercise })[];
     },
   });
 }
-
-// ─── Session history ──────────────────────────────────────────────────────────
 
 export function useSessionHistory(limit = 20) {
   const { user } = useAuth();
@@ -232,133 +210,156 @@ export function useSessionHistory(limit = 20) {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("sessions")
-        .select("*, exercise:exercises(*)")
+        .select("*")
         .eq("user_id", user!.id)
         .in("status", ["completed", "cancelled"])
-        .order("completed_at", { ascending: false })
+        .order("ended_at", { ascending: false })
         .limit(limit);
-
       if (error) throw error;
-      return data as (SessionRow & { exercise: Exercise })[];
+      return (data ?? []) as SessionRow[];
     },
   });
 }
 
-// ─── Aggregated progress stats for the Progress page ─────────────────────────
-
-export interface DailyAccuracy {
-  day: string; // e.g. "Mon", "Feb 24"
-  date: string; // ISO date string for sorting
-  accuracy: number;
-}
-
-export interface ProgressStats {
-  totalSessions: number;
-  thisMonthSessions: number;
-  latestAccuracy: number | null;
-  avgAccuracyThisWeek: number | null;
-  avgAccuracyLastWeek: number | null;
-  improvementPercent: number | null;
-  dailyAccuracy: DailyAccuracy[]; // last 7 days with session data
-  recentSessions: (SessionRow & { exercise: Exercise })[];
-}
-
 export function useProgressStats() {
   const { user } = useAuth();
-
   return useQuery({
-    queryKey: ["progress", "stats", user?.id ?? ""],
+    queryKey: keys.progressStats(user?.id ?? ""),
     enabled: !!user,
-    queryFn: async (): Promise<ProgressStats> => {
-      // Pull all completed sessions in the last 60 days
+    staleTime: 0,
+    queryFn: async () => {
       const since = new Date();
       since.setDate(since.getDate() - 60);
 
       const { data: sessions, error } = await supabase
         .from("sessions")
-        .select("*, exercise:exercises(*)")
+        .select("*")
         .eq("user_id", user!.id)
-        .eq("status", "completed")
-        .gte("completed_at", since.toISOString())
-        .order("completed_at", { ascending: false });
-
+        .in("status", ["completed", "cancelled"])
+        .not("ended_at", "is", null)
+        .gte("ended_at", since.toISOString())
+        .order("ended_at", { ascending: false });
       if (error) throw error;
 
-      const all = (sessions ?? []) as (SessionRow & { exercise: Exercise })[];
+      if (!sessions || sessions.length === 0) {
+        return {
+          totalSessions: 0,
+          thisMonthSessions: 0,
+          recentSessions: [],
+          latestAccuracy: null,
+          improvementPercent: null,
+          dailyAccuracy: [],
+        };
+      }
 
-      // ── Total & this-month counts ──────────────────────────────────────────
-      const now = new Date();
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const thisMonthSessions = all.filter(
-        (s) => new Date(s.completed_at!) >= monthStart,
-      ).length;
+      const sessionIds = sessions.map((s) => s.id);
 
-      // ── This week vs last week accuracy ───────────────────────────────────
-      const weekStart = new Date(now);
-      weekStart.setDate(now.getDate() - now.getDay()); // Sunday
-      weekStart.setHours(0, 0, 0, 0);
+      const { data: allSessionExercises, error: seError } = await supabase
+        .from("session_exercises")
+        .select("id, session_id, reps, pain_level, completed, exercise_id")
+        .in("session_id", sessionIds);
+      if (seError) throw seError;
 
-      const lastWeekStart = new Date(weekStart);
-      lastWeekStart.setDate(weekStart.getDate() - 7);
+      const { data: allExercises, error: exError } = await supabase
+        .from("exercises")
+        .select("id, name");
+      if (exError) throw exError;
 
-      const thisWeek = all.filter(
-        (s) => new Date(s.completed_at!) >= weekStart,
-      );
-      const lastWeek = all.filter(
-        (s) =>
-          new Date(s.completed_at!) >= lastWeekStart &&
-          new Date(s.completed_at!) < weekStart,
-      );
+      const exerciseMap: Record<string, string> = {};
+      (allExercises ?? []).forEach((e) => { exerciseMap[e.id] = e.name; });
 
-      const avg = (arr: (SessionRow & { exercise: Exercise })[]) => {
-        const valid = arr.filter((s) => s.avg_accuracy != null);
-        if (!valid.length) return null;
-        return Math.round(
-          valid.reduce((sum, s) => sum + Number(s.avg_accuracy), 0) /
-            valid.length,
-        );
-      };
-
-      const avgThisWeek = avg(thisWeek);
-      const avgLastWeek = avg(lastWeek);
-
-      const improvementPercent =
-        avgThisWeek != null && avgLastWeek != null && avgLastWeek > 0
-          ? Math.round(((avgThisWeek - avgLastWeek) / avgLastWeek) * 100)
-          : null;
-
-      // ── Daily accuracy for chart (last 14 days that have sessions) ─────────
-      const byDay = new Map<string, number[]>();
-      all.forEach((s) => {
-        if (!s.completed_at || s.avg_accuracy == null) return;
-        const d = new Date(s.completed_at);
-        const key = d.toISOString().slice(0, 10); // YYYY-MM-DD
-        if (!byDay.has(key)) byDay.set(key, []);
-        byDay.get(key)!.push(Number(s.avg_accuracy));
+      const seMap: Record<string, typeof allSessionExercises[0][]> = {};
+      (allSessionExercises ?? []).forEach((se) => {
+        if (!seMap[se.session_id]) seMap[se.session_id] = [];
+        seMap[se.session_id].push(se);
       });
 
-      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-      const dailyAccuracy: DailyAccuracy[] = Array.from(byDay.entries())
-        .map(([date, vals]) => ({
-          date,
-          day: dayNames[new Date(date).getDay()],
-          accuracy: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length),
-        }))
-        .sort((a, b) => a.date.localeCompare(b.date))
-        .slice(-14); // last 14 days with data
+      type RecentSession = {
+        id: string;
+        ended_at: string | null;
+        duration_sec: number | null;
+        status: string;
+        exerciseName: string;
+        accuracy: number;
+        totalSets: number;
+        totalReps: number;
+      };
+
+      const recentSessions: RecentSession[] = sessions.slice(0, 5).map((s) => {
+        const ses = seMap[s.id] ?? [];
+        const firstSe = ses[0];
+        const exerciseName = firstSe ? (exerciseMap[firstSe.exercise_id] ?? "Exercise") : "Exercise";
+        const totalReps = ses.reduce((sum, e) => sum + (e.reps ?? 0), 0);
+        const accuracy = firstSe?.pain_level ?? 0;
+        return {
+          id: s.id,
+          ended_at: s.ended_at,
+          duration_sec: s.duration_sec,
+          status: s.status,
+          exerciseName,
+          accuracy,
+          totalSets: ses.length,
+          totalReps,
+        };
+      });
+
+      const latestAccuracy = recentSessions[0]?.accuracy ?? null;
+
+      const weekAgo = new Date();
+      weekAgo.setDate(weekAgo.getDate() - 7);
+      const lastWeekStart = new Date();
+      lastWeekStart.setDate(lastWeekStart.getDate() - 14);
+
+      const weekSessions = sessions.filter((s) => s.ended_at && new Date(s.ended_at) >= weekAgo);
+      const lastWeekSessions = sessions.filter(
+        (s) => s.ended_at && new Date(s.ended_at) >= lastWeekStart && new Date(s.ended_at) < weekAgo
+      );
+
+      const avgAccuracyForSessions = (ses: typeof sessions) => {
+        if (!ses.length) return null;
+        const vals = ses
+          .flatMap((s) => seMap[s.id] ?? [])
+          .map((e) => e.pain_level)
+          .filter((v): v is number => v != null && v > 0);
+        if (!vals.length) return null;
+        return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+      };
+
+      const thisWeekAvg = avgAccuracyForSessions(weekSessions);
+      const lastWeekAvg = avgAccuracyForSessions(lastWeekSessions);
+      const improvementPercent =
+        thisWeekAvg != null && lastWeekAvg != null && lastWeekAvg > 0
+          ? Math.round(((thisWeekAvg - lastWeekAvg) / lastWeekAvg) * 100)
+          : null;
+
+      const dailyMap: Record<string, { total: number; count: number }> = {};
+      sessions.forEach((s) => {
+        if (!s.ended_at) return;
+        const day = new Date(s.ended_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        const acc = (seMap[s.id]?.[0])?.pain_level;
+        if (acc != null && acc > 0) {
+          dailyMap[day] = dailyMap[day] ?? { total: 0, count: 0 };
+          dailyMap[day].total += acc;
+          dailyMap[day].count += 1;
+        }
+      });
+      const dailyAccuracy = Object.entries(dailyMap)
+        .slice(0, 14)
+        .map(([day, { total, count }]) => ({ day, accuracy: Math.round(total / count) }));
+
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const thisMonthSessions = sessions.filter(
+        (s) => s.ended_at && new Date(s.ended_at) >= monthStart
+      ).length;
 
       return {
-        totalSessions: all.length,
+        totalSessions: sessions.length,
         thisMonthSessions,
-        latestAccuracy:
-          all[0]?.avg_accuracy != null
-            ? Math.round(Number(all[0].avg_accuracy))
-            : null,
-        avgAccuracyThisWeek: avgThisWeek,
-        avgAccuracyLastWeek: avgLastWeek,
+        recentSessions,
+        latestAccuracy,
         improvementPercent,
         dailyAccuracy,
-        recentSessions: all.slice(0, 5),
       };
     },
   });

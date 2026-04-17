@@ -1,46 +1,56 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { X, ArrowRight, ArrowLeft, CheckCircle2, AlertTriangle, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { useNavigate } from "react-router-dom";
+import type { Exercise } from "@/lib/database.types";
 
 interface PreSessionCheckModalProps {
   open: boolean;
   onClose: () => void;
+  onStartSession?: (exercise: Exercise, preData: { painLevelBefore: number; sorenessAreas: string[]; sharpPain: string }) => void;
+  onSkip?: (exercise: Exercise) => void;
+  selectedExercise?: Exercise | null;
 }
 
 const bodyAreas = ["Knee", "Shoulder", "Back", "Hip", "None"];
 const painOptions = ["No unusual pain", "Mild sharp pain", "Severe sharp pain"];
-
 const TOTAL_STEPS = 3;
 
-const PreSessionCheckModal = ({ open, onClose }: PreSessionCheckModalProps) => {
+const PreSessionCheckModal = ({ open, onClose, onStartSession, onSkip, selectedExercise }: PreSessionCheckModalProps) => {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [submitted, setSubmitted] = useState(false);
-
   const [painLevel, setPainLevel] = useState([3]);
   const [sorenessAreas, setSorenessAreas] = useState<string[]>([]);
   const [sharpPain, setSharpPain] = useState("");
 
+  // Reset state when modal opens
+  useEffect(() => {
+    if (open) {
+      setStep(1);
+      setSubmitted(false);
+      setPainLevel([3]);
+      setSorenessAreas([]);
+      setSharpPain("");
+    }
+  }, [open]);
+
+  const preData = { painLevelBefore: painLevel[0], sorenessAreas, sharpPain };
+
   const handleGoToSession = () => {
     onClose();
-    navigate("/session", {
-      state: {
-        painLevelBefore: painLevel[0],
-        sorenessAreas,
-        sharpPain,
-      },
-    });
+    if (onStartSession && selectedExercise) {
+      onStartSession(selectedExercise, preData);
+    } else {
+      navigate("/session", { state: preData });
+    }
   };
 
   if (!open) return null;
 
   const toggleArea = (area: string) => {
-    if (area === "None") {
-      setSorenessAreas(["None"]);
-      return;
-    }
+    if (area === "None") { setSorenessAreas(["None"]); return; }
     setSorenessAreas((prev) => {
       const without = prev.filter((a) => a !== "None");
       return without.includes(area) ? without.filter((a) => a !== area) : [...without, area];
@@ -57,20 +67,14 @@ const PreSessionCheckModal = ({ open, onClose }: PreSessionCheckModalProps) => {
   };
 
   const handleNext = () => {
-    if (step < TOTAL_STEPS) {
-      setStep(step + 1);
-    } else {
-      setSubmitted(true);
-    }
+    if (step < TOTAL_STEPS) { setStep(step + 1); }
+    else { setSubmitted(true); }
   };
 
-  const handleBack = () => {
-    if (step > 1) setStep(step - 1);
-  };
+  const handleBack = () => { if (step > 1) setStep(step - 1); };
 
   const level = painLevel[0];
   const isSevere = sharpPain === "Severe sharp pain";
-
   const getOutcome = () => {
     if (level >= 7 || isSevere) return "caution";
     if (level >= 4) return "modified";
@@ -81,30 +85,24 @@ const PreSessionCheckModal = ({ open, onClose }: PreSessionCheckModalProps) => {
 
   const outcomeScreens = {
     ready: {
-      icon: CheckCircle2,
-      iconBg: "bg-success/10",
-      iconColor: "text-success",
+      icon: CheckCircle2, iconBg: "bg-success/10", iconColor: "text-success",
       title: "You're ready to begin.",
       subtitle: "Your body feels good today. Let's make the most of it.",
-      buttons: [{ label: "Start Normal Session", variant: "default" as const }],
+      buttons: [{ label: "Start Normal Session", variant: "default" as const, action: handleGoToSession }],
     },
     modified: {
-      icon: AlertTriangle,
-      iconBg: "bg-warning/10",
-      iconColor: "text-warning",
+      icon: AlertTriangle, iconBg: "bg-warning/10", iconColor: "text-warning",
       title: "We'll start with a lighter session today.",
       subtitle: "Based on your responses, we've adjusted the intensity.",
-      buttons: [{ label: "Start Modified Session", variant: "default" as const }],
+      buttons: [{ label: "Start Modified Session", variant: "default" as const, action: handleGoToSession }],
     },
     caution: {
-      icon: ShieldAlert,
-      iconBg: "bg-destructive/10",
-      iconColor: "text-destructive",
+      icon: ShieldAlert, iconBg: "bg-destructive/10", iconColor: "text-destructive",
       title: "It may be safer to rest today.",
       subtitle: "Your body may need more recovery time. Listen to it.",
       buttons: [
-        { label: "Reschedule Session", variant: "outline" as const },
-        { label: "Start Gentle Mobility", variant: "default" as const },
+        { label: "Reschedule Session", variant: "outline" as const, action: onClose },
+        { label: "Start Gentle Mobility", variant: "default" as const, action: handleGoToSession },
       ],
     },
   };
@@ -112,17 +110,13 @@ const PreSessionCheckModal = ({ open, onClose }: PreSessionCheckModalProps) => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-foreground/40 backdrop-blur-sm" onClick={onClose} />
-
       <div className="relative z-[60] w-full max-w-lg mx-4 bg-white rounded-2xl shadow-xl overflow-hidden animate-fade-up">
-        {/* Progress */}
         <div className="h-1 bg-border">
           <div className="h-full bg-primary transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
         </div>
-
         <button onClick={onClose} className="absolute right-4 top-4 z-10 text-muted-foreground hover:text-foreground transition-smooth">
           <X className="h-5 w-5" />
         </button>
-
         <div className="p-8">
           {submitted ? (
             (() => {
@@ -134,72 +128,47 @@ const PreSessionCheckModal = ({ open, onClose }: PreSessionCheckModalProps) => {
                   <div className={`mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full ${screen.iconBg}`}>
                     <Icon className={`h-8 w-8 ${screen.iconColor}`} />
                   </div>
-                  <h2 className="text-2xl text-foreground mb-2" style={{ fontFamily: "'DM Serif Display', serif" }}>
-                    {screen.title}
-                  </h2>
+                  <h2 className="text-2xl text-foreground mb-2" style={{ fontFamily: "'DM Serif Display', serif" }}>{screen.title}</h2>
                   <p className="text-muted-foreground text-sm mb-8">{screen.subtitle}</p>
                   <div className="flex items-center justify-center gap-3">
                     {screen.buttons.map((btn) => (
-                      <Button
-                        key={btn.label}
-                        variant={btn.variant}
-                        onClick={btn.variant === "outline" ? onClose : handleGoToSession}
-                        className="h-11 px-6 rounded-xl text-sm font-medium"
-                      >
-                        {btn.label}
-                        <ArrowRight className="h-4 w-4 ml-1" />
+                      <Button key={btn.label} variant={btn.variant} onClick={btn.action} className="h-11 px-6 rounded-xl text-sm font-medium">
+                        {btn.label}<ArrowRight className="h-4 w-4 ml-1" />
                       </Button>
                     ))}
+                    {onSkip && selectedExercise && (
+                      <Button variant="ghost" size="sm" onClick={() => { onClose(); onSkip(selectedExercise); }} className="text-muted-foreground text-xs">
+                        Skip Pre-Session Check
+                      </Button>
+                    )}
                   </div>
                 </div>
               );
             })()
           ) : (
             <>
-              <h2 className="text-xl text-foreground mb-1" style={{ fontFamily: "'DM Serif Display', serif" }}>
-                How Are You Feeling Today?
-              </h2>
-              <p className="text-xs font-medium text-muted-foreground tracking-wide mb-6">
-                Step {step} of {TOTAL_STEPS}
-              </p>
+              <h2 className="text-xl text-foreground mb-1" style={{ fontFamily: "'DM Serif Display', serif" }}>How Are You Feeling Today?</h2>
+              <p className="text-xs font-medium text-muted-foreground tracking-wide mb-6">Step {step} of {TOTAL_STEPS}</p>
 
-              {/* Step 1 – Pain Level */}
               {step === 1 && (
                 <div className="animate-fade-up">
                   <h3 className="text-sm font-medium text-foreground mb-4">Current Pain Level</h3>
                   <div className="px-2">
-                    <Slider
-                      value={painLevel}
-                      onValueChange={setPainLevel}
-                      min={1}
-                      max={10}
-                      step={1}
-                      className="my-4"
-                    />
+                    <Slider value={painLevel} onValueChange={setPainLevel} min={1} max={10} step={1} className="my-4" />
                     <div className="flex justify-between text-xs text-muted-foreground mt-2">
-                      <span>Minimal</span>
-                      <span className="text-lg font-semibold text-foreground">{painLevel[0]}</span>
-                      <span>Severe</span>
+                      <span>Minimal</span><span className="text-lg font-semibold text-foreground">{painLevel[0]}</span><span>Severe</span>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Step 2 – Muscle Soreness */}
               {step === 2 && (
                 <div className="animate-fade-up">
                   <h3 className="text-sm font-medium text-foreground mb-4">Muscle Soreness Areas</h3>
                   <div className="grid grid-cols-3 gap-3">
                     {bodyAreas.map((area) => (
-                      <button
-                        key={area}
-                        onClick={() => toggleArea(area)}
-                        className={`rounded-xl border p-3 text-sm font-medium transition-smooth ${
-                          sorenessAreas.includes(area)
-                            ? "border-primary bg-primary/5 text-primary"
-                            : "border-border bg-background text-foreground hover:border-muted"
-                        }`}
-                      >
+                      <button key={area} onClick={() => toggleArea(area)}
+                        className={`rounded-xl border p-3 text-sm font-medium transition-smooth ${sorenessAreas.includes(area) ? "border-primary bg-primary/5 text-primary" : "border-border bg-background text-foreground hover:border-muted"}`}>
                         {area}
                       </button>
                     ))}
@@ -207,21 +176,13 @@ const PreSessionCheckModal = ({ open, onClose }: PreSessionCheckModalProps) => {
                 </div>
               )}
 
-              {/* Step 3 – Sharp Pain */}
               {step === 3 && (
                 <div className="animate-fade-up">
                   <h3 className="text-sm font-medium text-foreground mb-4">Sharp Pain Check</h3>
                   <div className="space-y-3">
                     {painOptions.map((option) => (
-                      <button
-                        key={option}
-                        onClick={() => setSharpPain(option)}
-                        className={`w-full text-left rounded-xl border p-4 text-sm font-medium transition-smooth ${
-                          sharpPain === option
-                            ? "border-primary bg-primary/5 text-primary"
-                            : "border-border bg-background text-foreground hover:border-muted"
-                        }`}
-                      >
+                      <button key={option} onClick={() => setSharpPain(option)}
+                        className={`w-full text-left rounded-xl border p-4 text-sm font-medium transition-smooth ${sharpPain === option ? "border-primary bg-primary/5 text-primary" : "border-border bg-background text-foreground hover:border-muted"}`}>
                         {option}
                       </button>
                     ))}
@@ -229,20 +190,12 @@ const PreSessionCheckModal = ({ open, onClose }: PreSessionCheckModalProps) => {
                 </div>
               )}
 
-              {/* Navigation */}
               <div className="flex items-center justify-between mt-8">
                 {step > 1 ? (
-                  <button onClick={handleBack} className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-smooth">
-                    <ArrowLeft className="h-4 w-4" /> Back
-                  </button>
+                  <button onClick={handleBack} className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-smooth"><ArrowLeft className="h-4 w-4" /> Back</button>
                 ) : <div />}
-                <Button
-                  onClick={handleNext}
-                  disabled={!canContinue()}
-                  className="h-11 px-8 rounded-xl text-sm font-medium"
-                >
-                  {step === TOTAL_STEPS ? "Submit" : "Continue"}
-                  <ArrowRight className="h-4 w-4 ml-1" />
+                <Button onClick={handleNext} disabled={!canContinue()} className="h-11 px-8 rounded-xl text-sm font-medium">
+                  {step === TOTAL_STEPS ? "Submit" : "Continue"}<ArrowRight className="h-4 w-4 ml-1" />
                 </Button>
               </div>
             </>
