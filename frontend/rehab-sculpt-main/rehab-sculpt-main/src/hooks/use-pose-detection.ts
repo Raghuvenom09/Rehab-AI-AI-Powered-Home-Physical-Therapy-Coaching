@@ -1,6 +1,28 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Pose, Results } from "@mediapipe/pose";
-import { Camera } from "@mediapipe/camera_utils";
+
+// Use global MediaPipe from CDN
+declare global {
+  interface Window {
+    Pose: typeof Pose;
+    Camera: typeof Camera;
+  }
+}
+
+// Simple type definitions for MediaPipe
+interface PoseResults {
+  poseLandmarks?: Array<{ x: number; y: number; z: number; visibility: number }>;
+}
+
+interface PoseConfig {
+  modelComplexity?: number;
+  smoothLandmarks?: boolean;
+  enableSegmentation?: boolean;
+  minDetectionConfidence?: number;
+  minTrackingConfidence?: number;
+  onResults?: (results: PoseResults) => void;
+}
+
+type ResultsCallback = (results: PoseResults) => void;
 
 export type LandmarkName =
   | "nose"
@@ -168,7 +190,14 @@ export function usePoseDetection({
     setIsModelLoading(true);
 
     try {
-      const pose = new Pose({
+      const PoseClass = (window as unknown as { Pose: new (config: PoseConfig) => { setOptions: (opts: Record<string, unknown>) => void; onResults: (cb: ResultsCallback) => void; initialize: () => Promise<void>; send: (data: { image: HTMLVideoElement }) => Promise<void> } }).Pose;
+      const CameraClass = (window as unknown as { Camera: new (video: HTMLVideoElement, config: { onFrame: () => Promise<void>; width: number; height: number }) => { start: () => Promise<void> } }).Camera;
+
+      if (!PoseClass || !CameraClass) {
+        throw new Error("MediaPipe not loaded");
+      }
+
+      const pose = new PoseClass({
         locateFile: (file) =>
           `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${file}`,
       });
@@ -183,13 +212,13 @@ export function usePoseDetection({
       });
 
       pose.onResults((res) => {
-        setResults(res);
+        setResults(res as unknown as Results);
         setLandmarks(resultsToLandmarks(res));
       });
 
       await pose.initialize();
 
-      const camera = new Camera(videoRef.current, {
+      const camera = new CameraClass(videoRef.current, {
         onFrame: async () => {
           if (videoRef.current && poseRef.current) {
             await poseRef.current.send({ image: videoRef.current });

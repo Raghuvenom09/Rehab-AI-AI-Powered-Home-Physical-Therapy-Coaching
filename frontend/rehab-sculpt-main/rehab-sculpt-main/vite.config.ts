@@ -15,4 +15,7 @@ export default defineConfig({
     outDir: "dist",
     sourcemap: false,
   },
+  optimizeDeps: {
+    exclude: ["@mediapipe/pose", "@mediapipe/camera_utils", "@mediapipe/selfie_segmentation"],
+  },
 });
